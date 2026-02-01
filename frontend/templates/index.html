@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Boise Trails Challenge Optimizer</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body x-data="app()" x-init="init()">
+    <header>
+        <h1>Boise Trails Challenge Optimizer</h1>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/settings">Settings</a>
+        </nav>
+    </header>
+
+    <main>
+        <div class="container">
+            <!-- Stats Panel -->
+            <section class="panel stats-panel">
+                <h2>Challenge Overview</h2>
+                <div class="stats" x-show="stats">
+                    <div class="stat">
+                        <span class="stat-value" x-text="stats?.total_miles || '—'"></span>
+                        <span class="stat-label">Total Miles</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value" x-text="stats?.total_segments || '—'"></span>
+                        <span class="stat-label">Segments</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value" x-text="route?.total_trips || '—'"></span>
+                        <span class="stat-label">Trips Planned</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Time Budget Panel -->
+            <section class="panel time-budget-panel">
+                <h2>Plan a Trip</h2>
+                <form @submit.prevent="getTimeBudgetTrip()">
+                    <div class="form-group">
+                        <label for="hours">Available Hours:</label>
+                        <input type="number" id="hours" x-model="timeBudget.hours" min="1" max="12" step="0.5" value="3">
+                    </div>
+                    <div class="form-group">
+                        <label for="date">Date:</label>
+                        <input type="date" id="date" x-model="timeBudget.date">
+                    </div>
+                    <div class="form-group">
+                        <label for="startTime">Start Time:</label>
+                        <input type="time" id="startTime" x-model="timeBudget.startTime" value="09:00">
+                    </div>
+                    <button type="submit" :disabled="loading">
+                        <span x-show="!loading">Find Trip</span>
+                        <span x-show="loading">Loading...</span>
+                    </button>
+                </form>
+
+                <div class="trip-result" x-show="timeBudgetResult">
+                    <h3>Recommended Trip</h3>
+                    <p x-text="timeBudgetResult?.message"></p>
+                    <template x-if="timeBudgetResult?.trip">
+                        <div class="trip-details">
+                            <div class="breakdown">
+                                <h4>Distance Breakdown</h4>
+                                <p><strong>Challenge:</strong> <span x-text="timeBudgetResult.trip.total_challenge_miles"></span> mi = <span x-text="timeBudgetResult.trip.challenge_hours"></span> hrs</p>
+                                <p class="garbage"><strong>Garbage:</strong> <span x-text="timeBudgetResult.trip.total_garbage_miles"></span> mi = <span x-text="timeBudgetResult.trip.garbage_hours"></span> hrs</p>
+                                <p class="total"><strong>TOTAL:</strong> <span x-text="timeBudgetResult.trip.total_miles"></span> mi = <span x-text="timeBudgetResult.trip.total_hours"></span> hrs</p>
+                            </div>
+                            <p><strong>Drive:</strong> ~<span x-text="timeBudgetResult.trip.drive_minutes"></span> min (<span x-text="timeBudgetResult.trip.drive_miles"></span> mi)</p>
+                            <p><strong>Sunset:</strong> <span x-text="timeBudgetResult.daylight_info.sunset"></span></p>
+                            <p x-show="!timeBudgetResult.can_complete_before_dark" class="warning">
+                                May not finish before dark!
+                            </p>
+                            <button class="btn-directions" @click="openDirections(timeBudgetResult.trip)">
+                                Get Directions
+                            </button>
+                            <details class="segment-details">
+                                <summary>View <span x-text="timeBudgetResult.trip.segments.length"></span> segments</summary>
+                                <ul class="segment-list">
+                                    <template x-for="(seg, idx) in timeBudgetResult.trip.segments" :key="seg.seg_id">
+                                        <li :class="{'garbage-segment': seg.direction === 'garbage'}">
+                                            <span class="seg-num" x-text="idx + 1"></span>
+                                            <span x-text="seg.seg_name"></span>
+                                            <span class="seg-length">(<span x-text="seg.length_mi.toFixed(1)"></span> mi)</span>
+                                            <span x-show="seg.direction === 'garbage'" class="badge-garbage">return</span>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </details>
+                        </div>
+                    </template>
+                </div>
+            </section>
+
+            <!-- Full Route Panel -->
+            <section class="panel route-panel">
+                <h2>Full Challenge Route</h2>
+                <button @click="optimizeRoute()" :disabled="loading">
+                    <span x-show="!loading">Optimize Full Challenge</span>
+                    <span x-show="loading">Optimizing...</span>
+                </button>
+
+                <div class="route-summary" x-show="route">
+                    <div class="summary-breakdown">
+                        <p><strong>Challenge:</strong> <span x-text="route?.total_challenge_miles"></span> mi</p>
+                        <p class="garbage"><strong>Garbage:</strong> <span x-text="route?.total_garbage_miles"></span> mi</p>
+                        <p class="total"><strong>Total:</strong> <span x-text="route?.total_miles"></span> mi in <span x-text="route?.total_trips"></span> trips</p>
+                        <p><strong>Efficiency:</strong> <span x-text="route?.efficiency"></span>%</p>
+                    </div>
+                    <div class="category-breakdown">
+                        <span class="badge short">Short: <span x-text="route?.by_category?.short || 0"></span></span>
+                        <span class="badge medium">Medium: <span x-text="route?.by_category?.medium || 0"></span></span>
+                        <span class="badge long">Long: <span x-text="route?.by_category?.long || 0"></span></span>
+                    </div>
+                    <div class="shuttle-summary" x-show="route?.shuttle_trips > 0">
+                        <p class="shuttle-info">
+                            🚗 <strong><span x-text="route?.shuttle_trips"></span> trips</strong> recommend shuttle
+                            (saves <span x-text="route?.total_shuttle_savings"></span> mi total)
+                        </p>
+                    </div>
+                </div>
+
+                <div class="trips-list" x-show="route?.trips">
+                    <template x-for="trip in route?.trips || []" :key="trip.trip_id">
+                        <div class="trip-card" :class="[trip.category, selectedTrip?.trip_id === trip.trip_id ? 'selected' : '', trip.needs_shuttle ? 'shuttle' : '']" @click="selectTrip(trip)">
+                            <div class="trip-header">
+                                <h4>Trip <span x-text="trip.trip_id"></span>: <span x-text="trip.area_name"></span></h4>
+                                <div class="header-badges">
+                                    <span class="badge" :class="trip.category" x-text="trip.category"></span>
+                                    <span class="badge shuttle" x-show="trip.needs_shuttle">🚗 shuttle</span>
+                                </div>
+                            </div>
+                            <div class="trip-stats">
+                                <div class="trip-breakdown">
+                                    <span class="challenge"><span x-text="trip.total_challenge_miles"></span> mi challenge</span>
+                                    <span class="garbage">+ <span x-text="trip.total_garbage_miles"></span> mi garbage</span>
+                                    <span class="total">= <span x-text="trip.total_miles"></span> mi</span>
+                                </div>
+                                <p class="time-breakdown">
+                                    <strong><span x-text="trip.total_hours"></span> hrs</strong> hiking
+                                </p>
+                                <p class="drive-info">
+                                    <span x-text="trip.drive_minutes"></span> min drive (<span x-text="trip.drive_miles"></span> mi)
+                                </p>
+                                <p class="shuttle-note" x-show="trip.needs_shuttle" x-text="trip.shuttle_note"></p>
+                            </div>
+                            <div class="trip-actions" x-show="selectedTrip?.trip_id === trip.trip_id">
+                                <button class="btn-directions btn-small" @click.stop="openDirections(trip)">
+                                    Get Directions
+                                </button>
+                                <button class="btn-map btn-small" @click.stop="showOnMap(trip)">
+                                    Show on Map
+                                </button>
+                            </div>
+                            <details class="segment-details" @click.stop x-show="selectedTrip?.trip_id === trip.trip_id">
+                                <summary>View <span x-text="trip.segments.filter(s => s.direction === 'challenge').length"></span> segments</summary>
+                                <ul class="segment-list">
+                                    <template x-for="(seg, idx) in trip.segments" :key="seg.seg_id + '-' + seg.seg_name">
+                                        <li :class="{'garbage-segment': seg.direction === 'garbage'}">
+                                            <span class="seg-num" x-text="idx + 1"></span>
+                                            <span x-text="seg.seg_name"></span>
+                                            <span class="seg-length">(<span x-text="seg.length_mi.toFixed(1)"></span> mi)</span>
+                                            <span x-show="seg.direction === 'garbage'" class="badge-garbage">return</span>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </details>
+                        </div>
+                    </template>
+                </div>
+            </section>
+
+            <!-- Map Panel (at bottom) -->
+            <section class="panel map-panel">
+                <h2>Trail Map</h2>
+                <div id="map"></div>
+            </section>
+        </div>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

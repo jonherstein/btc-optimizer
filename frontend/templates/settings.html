@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - BTC Optimizer</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body x-data="settingsApp()" x-init="init()">
+    <header>
+        <h1>Boise Trails Challenge Optimizer</h1>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/settings" class="active">Settings</a>
+        </nav>
+    </header>
+
+    <main>
+        <div class="container settings-container">
+            <!-- User Settings -->
+            <section class="panel">
+                <h2>User Settings</h2>
+
+                <form @submit.prevent="saveSettings()">
+                    <div class="form-group">
+                        <label for="homeAddress">Home Address (optional):</label>
+                        <input type="text" id="homeAddress" x-model="settings.home_address"
+                               placeholder="e.g., 123 Main St, Boise, ID">
+                        <small>For reference only - coordinates below are used for calculations</small>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="homeLat">Home Latitude:</label>
+                            <input type="number" id="homeLat" x-model="settings.home_lat"
+                                   step="0.0001" min="43" max="44">
+                        </div>
+                        <div class="form-group">
+                            <label for="homeLon">Home Longitude:</label>
+                            <input type="number" id="homeLon" x-model="settings.home_lon"
+                                   step="0.0001" min="-117" max="-116">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="pace">Hiking Pace (mph):</label>
+                        <input type="number" id="pace" x-model="settings.hiking_pace_mph"
+                               step="0.1" min="1" max="5">
+                        <small>Average pace: 2-3 mph. Faster hikers: 3-4 mph.</small>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" :disabled="saving">
+                            <span x-show="!saving">Save Settings</span>
+                            <span x-show="saving">Saving...</span>
+                        </button>
+                    </div>
+
+                    <div class="message success" x-show="saved" x-transition>
+                        Settings saved successfully!
+                    </div>
+                </form>
+            </section>
+
+            <!-- Common Locations -->
+            <section class="panel">
+                <h2>Common Boise Locations</h2>
+                <p>Click to use these coordinates:</p>
+                <ul class="location-list">
+                    <li @click="setLocation(43.6150, -116.2023, 'Downtown Boise')">
+                        <strong>Downtown Boise</strong> (43.6150, -116.2023)
+                    </li>
+                    <li @click="setLocation(43.6187, -116.2146, 'North End')">
+                        <strong>North End</strong> (43.6187, -116.2146)
+                    </li>
+                    <li @click="setLocation(43.5868, -116.1921, 'Boise Bench')">
+                        <strong>Boise Bench</strong> (43.5868, -116.1921)
+                    </li>
+                    <li @click="setLocation(43.6607, -116.3517, 'Eagle')">
+                        <strong>Eagle</strong> (43.6607, -116.3517)
+                    </li>
+                    <li @click="setLocation(43.5958, -116.3516, 'Meridian')">
+                        <strong>Meridian</strong> (43.5958, -116.3516)
+                    </li>
+                </ul>
+            </section>
+
+            <!-- BTC API Configuration -->
+            <section class="panel btc-panel">
+                <h2>BTC API Configuration</h2>
+
+                <div class="info-box">
+                    <h4>How to get these URLs</h4>
+                    <p>When the challenge is active, you can find the API URLs by:</p>
+                    <ol>
+                        <li>Go to <a href="https://boisetrailschallenge.com" target="_blank">boisetrailschallenge.com</a> and log in</li>
+                        <li>Open your browser's Developer Tools (F12 or Cmd+Option+I)</li>
+                        <li>Go to the <strong>Network</strong> tab</li>
+                        <li>Navigate to the trail map or your progress page</li>
+                        <li>Look for requests to <code>btc-api.azurewebsites.net</code></li>
+                        <li>Copy the full URL including the <code>code=</code> parameter</li>
+                    </ol>
+                    <p class="note">The URLs contain authentication codes that may change each season. Update them here when needed.</p>
+                </div>
+
+                <form @submit.prevent="saveBtcSettings()">
+                    <h4>Trail Data API</h4>
+                    <div class="form-group">
+                        <label for="trailApi">Trail Data URL:</label>
+                        <input type="text" id="trailApi" x-model="btcSettings.btc_trail_api"
+                               placeholder="https://btc-api.azurewebsites.net/api/GETChallengeTrailData_v2">
+                    </div>
+                    <div class="form-group">
+                        <label for="trailCode">Trail API Code:</label>
+                        <input type="text" id="trailCode" x-model="btcSettings.btc_trail_api_code"
+                               placeholder="Paste the code= parameter here">
+                        <small>Found in the URL after <code>?code=</code></small>
+                    </div>
+                    <div class="form-group">
+                        <label for="mgrId">Manager ID:</label>
+                        <input type="number" id="mgrId" x-model="btcSettings.btc_mgr_id"
+                               min="1" max="10">
+                        <small>Usually 1 - found as <code>MgrId=</code> in the URL</small>
+                    </div>
+
+                    <h4>Progress Tracking API (Optional)</h4>
+                    <p class="small-note">Only needed if you want to track your completed segments</p>
+                    <div class="form-group">
+                        <label for="progressApi">Progress API URL:</label>
+                        <input type="text" id="progressApi" x-model="btcSettings.btc_progress_api"
+                               placeholder="https://btc-api.azurewebsites.net/api/GETAthleteActivities_v2">
+                    </div>
+                    <div class="form-group">
+                        <label for="progressCode">Progress API Code:</label>
+                        <input type="text" id="progressCode" x-model="btcSettings.btc_progress_api_code"
+                               placeholder="Paste the code= parameter here">
+                    </div>
+                    <div class="form-group">
+                        <label for="userId">Your BTC User ID:</label>
+                        <input type="text" id="userId" x-model="btcSettings.btc_user_id"
+                               placeholder="Your uid from the API URL">
+                        <small>Found as <code>uid=</code> in progress API calls</small>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" :disabled="savingBtc">
+                            <span x-show="!savingBtc">Save BTC Settings</span>
+                            <span x-show="savingBtc">Saving...</span>
+                        </button>
+                        <button type="button" class="btn-secondary" @click="syncTrailData()" :disabled="syncing">
+                            <span x-show="!syncing">Refresh Trail Data</span>
+                            <span x-show="syncing">Syncing...</span>
+                        </button>
+                    </div>
+
+                    <div class="message success" x-show="btcSaved" x-transition>
+                        BTC settings saved successfully!
+                    </div>
+                    <div class="message" :class="syncResult?.success ? 'success' : 'error'" x-show="syncResult" x-transition>
+                        <span x-text="syncResult?.message"></span>
+                    </div>
+
+                    <div class="sync-info" x-show="btcSettings.last_sync">
+                        <small>Last synced: <span x-text="formatDate(btcSettings.last_sync)"></span></small>
+                    </div>
+                </form>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        function settingsApp() {
+            return {
+                settings: {
+                    home_address: '',
+                    home_lat: 43.6150,
+                    home_lon: -116.2023,
+                    hiking_pace_mph: 2.5,
+                },
+                btcSettings: {
+                    btc_trail_api: '',
+                    btc_trail_api_code: '',
+                    btc_mgr_id: 1,
+                    btc_progress_api: '',
+                    btc_progress_api_code: '',
+                    btc_user_id: '',
+                    last_sync: null,
+                },
+                saving: false,
+                saved: false,
+                savingBtc: false,
+                btcSaved: false,
+                syncing: false,
+                syncResult: null,
+
+                async init() {
+                    await this.loadSettings();
+                    await this.loadBtcSettings();
+                },
+
+                async loadSettings() {
+                    try {
+                        const res = await fetch('/api/settings');
+                        this.settings = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load settings:', e);
+                    }
+                },
+
+                async loadBtcSettings() {
+                    try {
+                        const res = await fetch('/api/btc-settings');
+                        this.btcSettings = await res.json();
+                    } catch (e) {
+                        console.error('Failed to load BTC settings:', e);
+                    }
+                },
+
+                async saveSettings() {
+                    this.saving = true;
+                    this.saved = false;
+                    try {
+                        const res = await fetch('/api/settings', {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.settings),
+                        });
+                        this.settings = await res.json();
+                        this.saved = true;
+                        setTimeout(() => this.saved = false, 3000);
+                    } catch (e) {
+                        console.error('Failed to save settings:', e);
+                    } finally {
+                        this.saving = false;
+                    }
+                },
+
+                async saveBtcSettings() {
+                    this.savingBtc = true;
+                    this.btcSaved = false;
+                    try {
+                        const res = await fetch('/api/btc-settings', {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.btcSettings),
+                        });
+                        this.btcSettings = await res.json();
+                        this.btcSaved = true;
+                        setTimeout(() => this.btcSaved = false, 3000);
+                    } catch (e) {
+                        console.error('Failed to save BTC settings:', e);
+                    } finally {
+                        this.savingBtc = false;
+                    }
+                },
+
+                async syncTrailData() {
+                    this.syncing = true;
+                    this.syncResult = null;
+                    try {
+                        const res = await fetch('/api/btc-sync', { method: 'POST' });
+                        this.syncResult = await res.json();
+                        if (this.syncResult.success) {
+                            this.btcSettings.last_sync = this.syncResult.last_sync;
+                        }
+                        setTimeout(() => this.syncResult = null, 5000);
+                    } catch (e) {
+                        this.syncResult = { success: false, message: 'Network error: ' + e.message };
+                    } finally {
+                        this.syncing = false;
+                    }
+                },
+
+                setLocation(lat, lon, name) {
+                    this.settings.home_lat = lat;
+                    this.settings.home_lon = lon;
+                    this.settings.home_address = name;
+                },
+
+                formatDate(isoString) {
+                    if (!isoString) return '';
+                    const d = new Date(isoString);
+                    return d.toLocaleString();
+                }
+            }
+        }
+    </script>
+</body>
+</html>

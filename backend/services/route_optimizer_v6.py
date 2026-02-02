@@ -312,6 +312,151 @@ class ShuttleAwareOptimizer:
 
         return "Home", self.home_coord
 
+    def _compute_walking_order(
+        self,
+        subgraph: nx.MultiGraph,
+        segment_ids: set[int],
+        start_node: str,
+        end_node: str,
+        seen_globally: set[int]
+    ) -> list[HikeSegment]:
+        """Compute actual walking order through segments using DFS traversal.
+
+        Uses a modified DFS that visits all edges, backtracking as needed.
+        Returns ordered list of HikeSegment with proper is_challenge flags.
+        """
+        if not segment_ids or len(subgraph.edges()) == 0:
+            return []
+
+        # Build edge tracking - need to visit each edge at least once
+        edges_to_visit = set()
+        edge_lookup = {}  # (u, v, key) -> edge_data
+        for u, v, key, data in subgraph.edges(keys=True, data=True):
+            edges_to_visit.add((u, v, key))
+            edge_lookup[(u, v, key)] = data
+            edge_lookup[(v, u, key)] = data  # Can traverse either direction
+
+        # Find best starting node (prefer start_node if it exists)
+        if start_node in subgraph.nodes():
+            current = start_node
+        else:
+            current = next(iter(subgraph.nodes()))
+
+        # DFS to visit all edges
+        segments_list = []
+        seen_in_hike = set()
+        visited_edges = set()
+
+        def get_unvisited_edges_from(node):
+            """Get edges from this node that haven't been visited."""
+            result = []
+            for u, v, key, data in subgraph.edges(node, keys=True, data=True):
+                edge_key = tuple(sorted([u, v])) + (key,)
+                if edge_key not in visited_edges:
+                    result.append((u, v, key, data))
+            return result
+
+        def mark_visited(u, v, key):
+            edge_key = tuple(sorted([u, v])) + (key,)
+            visited_edges.add(edge_key)
+
+        def is_visited(u, v, key):
+            edge_key = tuple(sorted([u, v])) + (key,)
+            return edge_key in visited_edges
+
+        # Main traversal loop
+        path_stack = [current]
+        total_edges = len(subgraph.edges())
+
+        while len(visited_edges) < total_edges:
+            # Try to find an unvisited edge from current node
+            unvisited = get_unvisited_edges_from(current)
+
+            if unvisited:
+                # Take an unvisited edge (prefer challenge segments first)
+                unvisited.sort(key=lambda e: (e[3].get('seg_id', 0) not in segment_ids, e[3].get('length_mi', 0)))
+                u, v, key, data = unvisited[0]
+                next_node = v if u == current else u
+                mark_visited(u, v, key)
+
+                # Add segment to list
+                seg_id = data.get('seg_id', -1)
+                seg_name = data.get('seg_name', '')
+                length_mi = data.get('length_mi', 0)
+
+                is_challenge = (
+                    seg_id in segment_ids and
+                    seg_id not in seen_globally and
+                    seg_id not in seen_in_hike
+                )
+                if is_challenge:
+                    seen_in_hike.add(seg_id)
+
+                segments_list.append(HikeSegment(
+                    seg_id=seg_id,
+                    seg_name=seg_name,
+                    length_mi=length_mi,
+                    is_challenge=is_challenge
+                ))
+
+                path_stack.append(next_node)
+                current = next_node
+
+            elif len(path_stack) > 1:
+                # Backtrack - need to walk back along a previously visited edge
+                path_stack.pop()
+                prev_node = path_stack[-1]
+
+                # Find the edge back (already visited, so this is "garbage" traversal)
+                for u, v, key, data in subgraph.edges(current, keys=True, data=True):
+                    next_node = v if u == current else u
+                    if next_node == prev_node:
+                        seg_id = data.get('seg_id', -1)
+                        seg_name = data.get('seg_name', '')
+                        length_mi = data.get('length_mi', 0)
+
+                        # This is a backtrack, so it's garbage miles (not challenge)
+                        segments_list.append(HikeSegment(
+                            seg_id=seg_id,
+                            seg_name=seg_name + " (return)",
+                            length_mi=length_mi,
+                            is_challenge=False
+                        ))
+                        break
+
+                current = prev_node
+
+            else:
+                # No more edges reachable - find any node with unvisited edges
+                found = False
+                for node in subgraph.nodes():
+                    if get_unvisited_edges_from(node):
+                        # Need to pathfind to this node
+                        try:
+                            path = nx.shortest_path(subgraph, current, node)
+                            # Walk the path (all edges already visited, so garbage)
+                            for i in range(len(path) - 1):
+                                a, b = path[i], path[i + 1]
+                                edge_data_dict = subgraph.get_edge_data(a, b)
+                                if edge_data_dict:
+                                    ekey, edata = next(iter(edge_data_dict.items()))
+                                    segments_list.append(HikeSegment(
+                                        seg_id=edata.get('seg_id', -1),
+                                        seg_name=edata.get('seg_name', '') + " (connector)",
+                                        length_mi=edata.get('length_mi', 0),
+                                        is_challenge=False
+                                    ))
+                            current = node
+                            path_stack = [node]
+                            found = True
+                            break
+                        except nx.NetworkXNoPath:
+                            continue
+                if not found:
+                    break  # Graph is disconnected, give up
+
+        return segments_list
+
     def _analyze_shuttle_benefit(
         self,
         g: nx.MultiGraph,
@@ -407,18 +552,11 @@ class ShuttleAwareOptimizer:
             end_coord = start_coord
             shuttle_note = ""
 
-        # Build segment list
-        segments_list = []
-        for seg_id in segment_ids:
-            seg = self._segments.get(seg_id)
-            if seg:
-                is_challenge = seg_id not in seen_globally
-                segments_list.append(HikeSegment(
-                    seg_id=seg_id,
-                    seg_name=seg.seg_name,
-                    length_mi=seg.length_mi,
-                    is_challenge=is_challenge
-                ))
+        # Compute actual walking order through segments
+        ordered_segments = self._compute_walking_order(
+            subgraph, segment_ids, start_node, end_node if needs_shuttle else start_node, seen_globally
+        )
+        segments_list = ordered_segments
 
         total_mi = challenge_mi + garbage_mi
         hours = total_mi / self.hiking_pace_mph
